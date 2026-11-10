@@ -147,14 +147,14 @@ Este documento no afirma que esos cambios estén implementados. Los cambios de c
 La inspección directa de `c/qwen36_tier.c` confirma que `qt_reserve()` se resta de la VRAM libre solo en la rama automática. Cuando `CUDA_EXPERT_GB` contiene un número positivo, la capacidad del tier se fijaba directamente a ese número y **no se limitaba por la VRAM libre menos 1 GiB de margen y G_reserve**. Por tanto, el límite numérico podía prometer al tier memoria que el motor ya había reservado para `q36cc_setup()`.
 
 Se ha corregido en esta rama:
-- calcular primero `available = max(free - 1 GiB - G_reserve, 0)`;
+- descontar primero 1 GiB de margen y después `G_reserve`, evitando overflow en la suma;
 - tratar el número de `CUDA_EXPERT_GB` como máximo solicitado, no como permiso para sobrepasar las reservas;
 - usar `min(requested, available)` en modo numérico;
 - emitir un diagnóstico cuando el límite se recorta.
 
 Se ha ampliado `c/tests/test_qwen36_tier_autoplace.c` para el caso: 2 GiB libres, petición explícita de 1,5 GiB, reserva de 128 MiB y trunk de 64 MiB. El presupuesto esperado para expertos es 832 MiB.
 
-**Estado de validación:** el cambio y el test están en GitHub; todavía no se ha ejecutado el binario de test ni se ha validado CUDA en el MSI. El commit de código es `0e9c8fec2b1fa54cba4c9af63ce65011bc8f40d8`; el test está en `7c89c18bd17317d45541bc75a0075fa1a3c65a0b`.
+**Estado de validación:** el cambio y el test están en GitHub; todavía no se ha ejecutado el binario de test ni se ha validado CUDA en el MSI. El cambio de código quedó actualizado en `721fe4b38b5c2ab0376c5d5d401102bef6926c2b`; el test está en `7c89c18bd17317d45541bc75a0075fa1a3c65a0b`.
 
 ## 8. Restricción de co-localización global
 
