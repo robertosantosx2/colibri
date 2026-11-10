@@ -215,7 +215,7 @@ int main(void) {
     qt_shutdown();
 
     /* ---- 10. numeric cap cannot consume the engine's reserved chain bytes ---- */
-    printf(" 10. explicit cap respects qt_reserve and physical headroom\\n");
+    printf(" 10. explicit cap respects qt_reserve and physical headroom\n");
     fresh("dnproj=0", "0", 1, "1.5");          /* request 1.5 GiB */
     fake_free_bytes = 2ull << 30;              /* 2 GiB free */
     qt_reserve(128 * MiB);                     /* 128 MiB for chain-owned buffers */
