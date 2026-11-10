@@ -255,7 +255,7 @@ int main(void) {
     ck(ch != NULL && ch->ok && ch->n == NL && ch->head, "the chain set itself up on the fake device, every layer and the head");
 
     /* Force the next model's setup to accept its parameter arena but refuse the first
-     * DeltaNet state buffer. The decline must release the arena and every host table,
+     * DeltaNet state buffer. The decline must release the arena and its host-side setup tables,
      * and must not leave m->cchain pointing at the discarded partial object. */
     {
         Model rejected; build_model(&rejected, &w); share_trunk(&rejected, &ref);
