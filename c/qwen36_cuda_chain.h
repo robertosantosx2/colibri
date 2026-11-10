@@ -324,6 +324,26 @@ static void q36cc_free_own(Q36CChain *ch, Model *m) {
 /* The chain on the device, at startup after the tier placed the trunk: every layer's
  * matrices found on one device, the parameter arena, the chain's own small tensors and
  * the DeltaNet state. NULL = the chain cannot run (the message says why). */
+/* A declined setup must leave neither a poisoned m->cchain nor host-side tables behind. */
+static void q36cc_discard_setup(Model *m, Q36CChain *ch) {
+    if (!ch) return;
+    q36cc_free_own(ch, m);
+#define Q36CC_FREE_FIELD(field) do { free(ch->field); ch->field = NULL; } while (0)
+    Q36CC_FREE_FIELD(o_in); Q36CC_FREE_FIELD(o_post); Q36CC_FREE_FIELD(o_qn); Q36CC_FREE_FIELD(o_kn);
+    Q36CC_FREE_FIELD(o_conv); Q36CC_FREE_FIELD(o_dn); Q36CC_FREE_FIELD(o_snk);
+    Q36CC_FREE_FIELD(o_ra); Q36CC_FREE_FIELD(o_rf); Q36CC_FREE_FIELD(o_pre); Q36CC_FREE_FIELD(o_pf);
+    Q36CC_FREE_FIELD(t_ag); Q36CC_FREE_FIELD(t_ld); Q36CC_FREE_FIELD(t_lu);
+    Q36CC_FREE_FIELD(t_sci); Q36CC_FREE_FIELD(t_sco); Q36CC_FREE_FIELD(o_po); Q36CC_FREE_FIELD(o_pff);
+    Q36CC_FREE_FIELD(t_ab); Q36CC_FREE_FIELD(t_sg); Q36CC_FREE_FIELD(t_gate); Q36CC_FREE_FIELD(rgf);
+    Q36CC_FREE_FIELD(t_q); Q36CC_FREE_FIELD(t_k); Q36CC_FREE_FIELD(t_v); Q36CC_FREE_FIELD(t_o);
+    Q36CC_FREE_FIELD(t_dnp); Q36CC_FREE_FIELD(t_dno); Q36CC_FREE_FIELD(t_shg); Q36CC_FREE_FIELD(t_shu); Q36CC_FREE_FIELD(t_shd);
+    Q36CC_FREE_FIELD(rec); Q36CC_FREE_FIELD(ring); Q36CC_FREE_FIELD(kc); Q36CC_FREE_FIELD(vc);
+    Q36CC_FREE_FIELD(kv_valid); Q36CC_FREE_FIELD(attn_ord); Q36CC_FREE_FIELD(kv_rows);
+#undef Q36CC_FREE_FIELD
+    if (m->cchain == ch) m->cchain = NULL;
+    free(ch);
+}
+
 static Q36CChain *q36cc_setup(Model *m, int mux_slots) {
     Cfg *c = &m->c; int L = c->n_layers, D = c->hidden;
     if (m->cchain) return ((Q36CChain *)m->cchain)->ok ? (Q36CChain *)m->cchain : NULL;
@@ -388,10 +408,10 @@ static Q36CChain *q36cc_setup(Model *m, int mux_slots) {
         !ch->o_ra || !ch->o_rf || !ch->o_pre || !ch->o_pf || !ch->t_ag || !ch->t_ld || !ch->t_lu ||
         !ch->t_sci || !ch->t_sco || !ch->o_po || !ch->o_pff ||
         !ch->t_q || !ch->t_k || !ch->t_v || !ch->t_o || !ch->t_dnp || !ch->t_dno || !ch->t_shg || !ch->t_shu || !ch->t_shd ||
-        !ch->rec || !ch->ring || !ch->kc || !ch->vc || !ch->kv_valid || !ch->attn_ord || !ch->kv_rows) return NULL;
+        !ch->rec || !ch->ring || !ch->kc || !ch->vc || !ch->kv_valid || !ch->attn_ord || !ch->kv_rows) goto fail;
     /* the tier's matrices, every one on one device */
     /* (the accessor fills `d` before q36cc_take reads it: two statements, not one call) */
-#define Q36CC_TAKE(slot, expr, what) do { int d_ = -1; ColiCudaTensor *t_ = (expr); if (!q36cc_take(ch, (slot), t_, d_, (what), i)) return NULL; } while (0)
+#define Q36CC_TAKE(slot, expr, what) do { int d_ = -1; ColiCudaTensor *t_ = (expr); if (!q36cc_take(ch, (slot), t_, d_, (what), i)) goto fail; } while (0)
     for (int i = 0; i < L; i++) {
         Layer *l = &m->L[i];
         if (c->is_attn[i]) {
@@ -420,7 +440,8 @@ static Q36CChain *q36cc_setup(Model *m, int mux_slots) {
     { int i = 0; Q36CC_TAKE(&ch->t_lm, qt_lmhead_tensor(&d_), "lm_head"); }
 #undef Q36CC_TAKE
     ch->head = 1;
-    if (!cc_init(ch->dev)) { fprintf(stderr, "[chain] qwen36: the chain's context on device %d did not come up\n", ch->dev); return NULL; }
+    if (!cc_init(ch->dev)) { fprintf(stderr, "[chain] qwen36: the chain's context on device %d did not come up\n", ch->dev); goto fail; }
+    atexit(cc_shutdown);  /* also shut down the backend if a later setup step declines the chain */
     /* the parameter arena: offsets, then one upload */
     size_t np = 0;
     int vh = c->dn_vheads, conv_dim = c->dn_conv_dim, convk = c->dn_convk;
@@ -443,7 +464,7 @@ static Q36CChain *q36cc_setup(Model *m, int mux_slots) {
     }
     ch->o_final = np; np += D;
     float *arena = calloc(np, sizeof(float));
-    if (!arena) return NULL;
+    if (!arena) goto fail;
     for (int i = 0; i < L; i++) {
         Layer *l = &m->L[i];
         memcpy(arena + ch->o_in[i], l->in_ln, D * sizeof(float));
@@ -517,8 +538,7 @@ static Q36CChain *q36cc_setup(Model *m, int mux_slots) {
     }
     if (!ok) {
         fprintf(stderr, "[chain] qwen36: device memory for the chain's parameters refused; the per-matrix path\n");
-        q36cc_free_own(ch, m);
-        return NULL;
+        goto fail;
     }
     ch->n = L;
     ch->dn_where = Q36CC_HOST; ch->host_zero = 0;
@@ -533,6 +553,9 @@ static Q36CChain *q36cc_setup(Model *m, int mux_slots) {
             L, ch->dev, ch->n_attn, np * 4 / 1048576.0, own / 1048576.0,
             (double)(L - ch->n_attn) * ((double)vh * c->dn_kdim * c->dn_vdim + (double)conv_dim * (convk - 1)) * 4 / 1e6);
     return ch;
+fail:
+    q36cc_discard_setup(m, ch);
+    return NULL;
 }
 
 /* the scratch buffers for `rows` rows */

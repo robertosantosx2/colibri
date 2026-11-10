@@ -253,6 +253,19 @@ int main(void) {
     printf(" A. the chain against the CPU path\n");
     Q36CChain *ch = q36cc_setup(&m, 1);
     ck(ch != NULL && ch->ok && ch->n == NL && ch->head, "the chain set itself up on the fake device, every layer and the head");
+
+    /* Force the next model's setup to accept its parameter arena but refuse the first
+     * DeltaNet state buffer. The decline must release the arena and its host-side setup tables,
+     * and must not leave m->cchain pointing at the discarded partial object. */
+    {
+        Model rejected; build_model(&rejected, &w); share_trunk(&rejected, &ref);
+        size_t held = fake_chain_dev_bytes;
+        fake_chain_dev_cap = held + ch->prm->bytes + 16;
+        Q36CChain *declined = q36cc_setup(&rejected, 1);
+        ck(declined == NULL && rejected.cchain == NULL, "a partial setup failure clears the model's chain pointer");
+        ck(fake_chain_dev_bytes == held, "a partial setup failure releases its CUDA parameter arena and state buffers");
+        fake_chain_dev_cap = 0;
+    }
     g_cuda_chain = 1;
     float *lr = step_ex(&ref, ids, 4, 0, 1);
     ref.kv_len = 4;

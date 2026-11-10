@@ -577,6 +577,7 @@ static int home2(int layer, int eid){ return G_home_layer ? G_layer_dev[layer] :
 static struct { char name[16]; int layer; size_t bytes; int dev; } G_offer[QT_OFFER_MAX];
 static int G_offer_n;
 static int G_auto_on;                                  /* auto placement decided */
+static int G_chain_placement;                           /* qwen36: chain trunk is one admission group */
 static int G_auto_lmh = QT_PLACE_CPU;
 static int G_auto_dnp[QT_DN_MAX_LAYERS];               /* per layer, or QT_PLACE_CPU */
 static size_t G_trunk_bytes[QT_MAX_DEV];               /* placed trunk per device index */
@@ -605,6 +606,8 @@ int qt_place_of(const char *component, int layer){
     return QT_PLACE_CPU;
 }
 
+
+void qt_chain_placement_enable(int on){ G_chain_placement = on != 0; }
 
 void qt_trunk_offer(const char *component, int layer, size_t bytes){
     if(!component || !bytes || G_offer_n >= QT_OFFER_MAX) return;
@@ -716,7 +719,50 @@ void qt_experts_withdraw(const char *why){
             why ? why : "withdrawn");
 }
 
+/* Qwen3.6 chain admission: all offered trunk matrices must fit on one
+ * device. This is a size-only transaction; no tensor is uploaded here. */
+static void chain_auto_place(const size_t *capacity){
+    size_t total = 0;
+    for(int o = 0; o < G_offer_n; o++){
+        if(G_offer[o].bytes > (size_t)-1 - total){
+            fprintf(stderr,"[place] chain: trunk byte count overflow; no partial placement\n");
+            total = (size_t)-1; break;
+        }
+        total += G_offer[o].bytes;
+    }
+    int best = -1;
+    if(total != (size_t)-1)
+        for(int i = 0; i < G.ndev; i++)
+            if(capacity[i] >= total && (best < 0 || capacity[i] > capacity[best])) best = i;
+
+    G_auto_on = 1;
+    G_auto_lmh = QT_PLACE_CPU;
+    for(int l = 0; l < QT_DN_MAX_LAYERS; l++) G_auto_dnp[l] = QT_PLACE_CPU;
+    for(int i = 0; i < QT_MAX_DEV; i++) G_trunk_bytes[i] = 0;
+    if(G_home_layer){
+        fprintf(stderr,"[place] chain: QT_HOME=layer disabled; the dense chain requires one device\n");
+        G_home_layer = 0;
+    }
+    if(best < 0){
+        for(int o = 0; o < G_offer_n; o++) G_offer[o].dev = QT_PLACE_CPU;
+        fprintf(stderr,"[place] chain: %zu bytes of trunk do not fit on one device; "
+                       "all chain offers stay on CPU\n", total);
+        return;
+    }
+    const int dev = G.dev[best];
+    for(int o = 0; o < G_offer_n; o++){
+        G_offer[o].dev = dev;
+        if(!strcmp(G_offer[o].name,"lmhead")) G_auto_lmh = dev;
+        else if(!strcmp(G_offer[o].name,"dnproj") && G_offer[o].layer < QT_DN_MAX_LAYERS)
+            G_auto_dnp[G_offer[o].layer] = dev;
+    }
+    G_trunk_bytes[best] = total;
+    fprintf(stderr,"[place] chain: admitted %d offers (%zu bytes) on dev %d; %.2f GB remains for experts\n",
+            G_offer_n, total, dev, (capacity[best]-total)/1073741824.0);
+}
+
 static void auto_place(int nl, int ne, int topk, const size_t *capacity, const uint32_t *heat0){
+    if(G_chain_placement){ chain_auto_place(capacity); return; }
     size_t room[QT_MAX_DEV];
     for(int i = 0; i < G.ndev; i++){ room[i] = capacity[i]; G_trunk_bytes[i] = 0; }
     for(int l = 0; l < QT_DN_MAX_LAYERS; l++) G_auto_dnp[l] = QT_PLACE_CPU;
@@ -1011,9 +1057,18 @@ int qt_init(int nl, int ne, int D, int Ih, int cap, int topk, int expert_gs,
     for(int i=0;i<G.ndev;i++){
         size_t freeb=0,totb=0; coli_cuda_mem_info(G.dev[i],&freeb,&totb);
         capdev[i] = G.dev[i];
-        capacity[i] = (bg && strcmp(bg,"auto") && atof(bg)>0)
-                   ? (size_t)(atof(bg)*1024.0*1024.0*1024.0)
-                   : (freeb>(1ull<<30)+G_reserve ? freeb-(1ull<<30)-G_reserve : 0);
+        /* Keep the engine's chain/KV/staging reservation and 1 GiB safety
+         * headroom available in BOTH auto and numeric modes. The previous
+         * numeric branch bypassed G_reserve and could consume bytes already
+         * promised to q36cc_setup(). */
+        size_t available = freeb > (1ull<<30) ? freeb - (1ull<<30) : 0;
+        available = available > G_reserve ? available - G_reserve : 0;
+        const size_t requested = (bg && strcmp(bg,"auto") && atof(bg)>0)
+                               ? (size_t)(atof(bg)*1024.0*1024.0*1024.0) : 0;
+        capacity[i] = requested ? (requested < available ? requested : available) : available;
+        if(requested > available)
+            fprintf(stderr,"[qtier] dev %d: CUDA_EXPERT_GB cap %.2f GB clamped to %.2f GB after 1 GiB headroom + %.2f GB engine reserve\n",
+                    G.dev[i], requested/1073741824.0, available/1073741824.0, G_reserve/1073741824.0);
         fprintf(stderr,"[qtier] dev %d: %.1f GB free, allowance %.1f GB\n",
                 G.dev[i], freeb/1073741824.0, capacity[i]/1073741824.0);
     }
