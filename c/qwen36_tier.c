@@ -1015,8 +1015,8 @@ int qt_init(int nl, int ne, int D, int Ih, int cap, int topk, int expert_gs,
          * headroom available in BOTH auto and numeric modes. The previous
          * numeric branch bypassed G_reserve and could consume bytes already
          * promised to q36cc_setup(). */
-        const size_t available = freeb > (1ull<<30) + G_reserve
-                               ? freeb - (1ull<<30) - G_reserve : 0;
+        size_t available = freeb > (1ull<<30) ? freeb - (1ull<<30) : 0;
+        available = available > G_reserve ? available - G_reserve : 0;
         const size_t requested = (bg && strcmp(bg,"auto") && atof(bg)>0)
                                ? (size_t)(atof(bg)*1024.0*1024.0*1024.0) : 0;
         capacity[i] = requested ? (requested < available ? requested : available) : available;
