@@ -554,7 +554,7 @@ static Q36CChain *q36cc_setup(Model *m, int mux_slots) {
     return ch;
 fail:
     q36cc_discard_setup(m, ch);
-    goto fail;
+    return NULL;
 }
 
 /* the scratch buffers for `rows` rows */
