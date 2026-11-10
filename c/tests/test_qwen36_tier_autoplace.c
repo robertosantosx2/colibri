@@ -31,6 +31,8 @@ enum { D = 64, IH = 32 };
 /* every case starts from a clean tier: no offers, no auto decision, env set */
 static void fresh(const char *place, const char *gpus, int ndev, const char *budget_gb) {
     G_offer_n = 0; G_auto_on = 0;
+    G_reserve = 0; G_reserve_short = 0; G_short_experts = 0;
+    fake_free_bytes = 2ull << 30;
     setenv("COLI_CUDA", "1", 1);
     setenv("COLI_GPUS", gpus, 1);
     setenv("QT_NO_WARMSTART", "1", 1);
@@ -210,6 +212,17 @@ int main(void) {
     check(start(8, 16, 4), "tier starts with experts=all");
     check(G.ndev == 2, "experts=all: both cards keep their experts, the reserved one included");
     check(qt_place_of("experts", 0) == QT_PLACE_ALL, "experts=all parses to the all marker");
+    qt_shutdown();
+
+    /* ---- 10. numeric cap cannot consume the engine's reserved chain bytes ---- */
+    printf(" 10. explicit cap respects qt_reserve and physical headroom\\n");
+    fresh("dnproj=0", "0", 1, "1.5");          /* request 1.5 GiB */
+    fake_free_bytes = 2ull << 30;              /* 2 GiB free */
+    qt_reserve(128 * MiB);                     /* 128 MiB for chain-owned buffers */
+    qt_trunk_offer("dnproj", 0, 64 * MiB);
+    check(start(8, 16, 4), "tier starts with an explicit cap and engine reserve");
+    check(G.budget[0] == 832 * MiB,
+          "allowance is min(1.5 GiB, 2 GiB - 1 GiB headroom - 128 MiB reserve) minus 64 MiB trunk");
     qt_shutdown();
 
     if (fails) { printf("test_qwen36_tier_autoplace: %d failure(s)\n", fails); return 1; }
