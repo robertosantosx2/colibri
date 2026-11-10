@@ -441,6 +441,7 @@ static Q36CChain *q36cc_setup(Model *m, int mux_slots) {
 #undef Q36CC_TAKE
     ch->head = 1;
     if (!cc_init(ch->dev)) { fprintf(stderr, "[chain] qwen36: the chain's context on device %d did not come up\n", ch->dev); goto fail; }
+    atexit(cc_shutdown);  /* also shut down the backend if a later setup step declines the chain */
     /* the parameter arena: offsets, then one upload */
     size_t np = 0;
     int vh = c->dn_vheads, conv_dim = c->dn_conv_dim, convk = c->dn_convk;
