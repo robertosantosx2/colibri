@@ -1011,10 +1011,19 @@ int qt_init(int nl, int ne, int D, int Ih, int cap, int topk, int expert_gs,
     for(int i=0;i<G.ndev;i++){
         size_t freeb=0,totb=0; coli_cuda_mem_info(G.dev[i],&freeb,&totb);
         capdev[i] = G.dev[i];
-        capacity[i] = (bg && strcmp(bg,"auto") && atof(bg)>0)
-                   ? (size_t)(atof(bg)*1024.0*1024.0*1024.0)
-                   : (freeb>(1ull<<30)+G_reserve ? freeb-(1ull<<30)-G_reserve : 0);
-        fprintf(stderr,"[qtier] dev %d: %.1f GB free, allowance %.1f GB\n",
+        /* Keep the engine's chain/KV/staging reservation and 1 GiB safety
+         * headroom available in BOTH auto and numeric modes. The previous
+         * numeric branch bypassed G_reserve and could consume bytes already
+         * promised to q36cc_setup(). */
+        const size_t available = freeb > (1ull<<30) + G_reserve
+                               ? freeb - (1ull<<30) - G_reserve : 0;
+        const size_t requested = (bg && strcmp(bg,"auto") && atof(bg)>0)
+                               ? (size_t)(atof(bg)*1024.0*1024.0*1024.0) : 0;
+        capacity[i] = requested ? (requested < available ? requested : available) : available;
+        if(requested > available)
+            fprintf(stderr,"[qtier] dev %d: CUDA_EXPERT_GB cap %.2f GB clamped to %.2f GB after 1 GiB headroom + %.2f GB engine reserve\\n",
+                    G.dev[i], requested/1073741824.0, available/1073741824.0, G_reserve/1073741824.0);
+        fprintf(stderr,"[qtier] dev %d: %.1f GB free, allowance %.1f GB\\n",
                 G.dev[i], freeb/1073741824.0, capacity[i]/1073741824.0);
     }
     G.slot=calloc((size_t)nl*(ne>0?ne:1),sizeof(QSlot));   /* a dense model's tier (ne 0): its trunk alone */
