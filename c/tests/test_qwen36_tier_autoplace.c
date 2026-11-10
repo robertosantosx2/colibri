@@ -30,7 +30,7 @@ enum { D = 64, IH = 32 };
 
 /* every case starts from a clean tier: no offers, no auto decision, env set */
 static void fresh(const char *place, const char *gpus, int ndev, const char *budget_gb) {
-    G_offer_n = 0; G_auto_on = 0;
+    G_offer_n = 0; G_auto_on = 0; G_chain_placement = 0;
     G_reserve = 0; G_reserve_short = 0; G_short_experts = 0;
     fake_free_bytes = 2ull << 30;
     setenv("COLI_CUDA", "1", 1);
@@ -223,6 +223,41 @@ int main(void) {
     check(start(8, 16, 4), "tier starts with an explicit cap and engine reserve");
     check(G.budget[0] == 832 * MiB,
           "allowance is min(1.5 GiB, 2 GiB - 1 GiB headroom - 128 MiB reserve) minus 64 MiB trunk");
+    qt_shutdown();
+
+
+    /* ---- 11. chain: all offers share one device ---- */
+    printf(" 11. chain: all offers share one device\n");
+    fresh("", "0,1", 2, "0.0625");
+    G_chain_placement = 1;
+    qt_trunk_offer("lmhead", 0, 10 * MiB);
+    qt_trunk_offer("dnproj", 0, 2 * MiB);
+    qt_trunk_offer("dnproj", 1, 2 * MiB);
+    qt_trunk_offer("dnout", 0, 2 * MiB);
+    qt_trunk_offer("attnproj", 1, 2 * MiB);
+    qt_trunk_offer("shexp", 1, 2 * MiB);
+    check(start(8, 16, 4), "tier starts for chain placement");
+    check(qt_place_of("lmhead", 0) == 0 && qt_place_of("dnproj", 1) == 0 &&
+          qt_place_of("dnout", 0) == 0 && qt_place_of("attnproj", 1) == 0 &&
+          qt_place_of("shexp", 1) == 0, "all chain offers are co-located");
+    check(G.budget[0] == 44 * MiB && G.budget[1] == 64 * MiB,
+          "only the selected device pays the 20 MiB trunk reservation");
+    qt_shutdown();
+
+    /* ---- 12. chain: no single device fits, so admit no partial trunk ---- */
+    printf(" 12. chain: no-fit leaves all offers on CPU\n");
+    fresh("", "0,1", 2, "0.0625");
+    G_chain_placement = 1;
+    qt_trunk_offer("lmhead", 0, 40 * MiB);
+    qt_trunk_offer("dnproj", 0, 30 * MiB);
+    qt_trunk_offer("dnout", 0, 20 * MiB);
+    check(start(8, 16, 4), "tier starts for chain no-fit");
+    check(qt_place_of("lmhead", 0) == QT_PLACE_CPU &&
+          qt_place_of("dnproj", 0) == QT_PLACE_CPU &&
+          qt_place_of("dnout", 0) == QT_PLACE_CPU,
+          "no component is partially admitted");
+    check(G.budget[0] == 64 * MiB && G.budget[1] == 64 * MiB,
+          "no-fit preserves both expert allowances");
     qt_shutdown();
 
     if (fails) { printf("test_qwen36_tier_autoplace: %d failure(s)\n", fails); return 1; }
