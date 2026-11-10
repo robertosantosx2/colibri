@@ -9722,6 +9722,7 @@ int main(int argc, char **argv) {
     /* the CUDA chain uploads its own router, DeltaNet b|a and gate rows after the tier sized
      * its budget: out of the tier's allowance, or the tier fills the card and the chain's
      * prompt scratch and KV mirror find no room (Muse Spark's f32 router: 496 MiB) */
+    qt_chain_placement_enable(q36cc_env_on() && getenv("COLI_CUDA") && getenv("COLI_CUDA")[0] == '1');
     if (q36cc_env_on() && getenv("COLI_CUDA") && getenv("COLI_CUDA")[0] == '1') {
         qt_reserve(q36cc_own_bytes(&m) + q36cc_mirror_bytes(&m, qwen36_max_ctx()));   /* and the KV mirrors of a model whose chain needs them whole */
         q36_gguf_stage_reserve(&m);   /* and a GGUF's prompt staging, where the card holds fewer than all its experts */
