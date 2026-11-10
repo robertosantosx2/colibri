@@ -9847,7 +9847,7 @@ int main(int argc, char **argv) {
          * per-layer step below is not set up beside it. */
         int chain_up = 0;
 #ifdef COLI_CUDA
-        if (q36cc_env_on() && q36cc_setup(&m, g_q36_mux_slots)) { g_cuda_chain = 1; chain_up = 1; atexit(cc_shutdown); }
+        if (q36cc_env_on() && q36cc_setup(&m, g_q36_mux_slots)) { g_cuda_chain = 1; chain_up = 1; }
 #endif
         if (!chain_up && dn_gpu_env_on()) {
             int n = 0; double vram = 0;
