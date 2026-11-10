@@ -1021,9 +1021,9 @@ int qt_init(int nl, int ne, int D, int Ih, int cap, int topk, int expert_gs,
                                ? (size_t)(atof(bg)*1024.0*1024.0*1024.0) : 0;
         capacity[i] = requested ? (requested < available ? requested : available) : available;
         if(requested > available)
-            fprintf(stderr,"[qtier] dev %d: CUDA_EXPERT_GB cap %.2f GB clamped to %.2f GB after 1 GiB headroom + %.2f GB engine reserve\\n",
+            fprintf(stderr,"[qtier] dev %d: CUDA_EXPERT_GB cap %.2f GB clamped to %.2f GB after 1 GiB headroom + %.2f GB engine reserve\n",
                     G.dev[i], requested/1073741824.0, available/1073741824.0, G_reserve/1073741824.0);
-        fprintf(stderr,"[qtier] dev %d: %.1f GB free, allowance %.1f GB\\n",
+        fprintf(stderr,"[qtier] dev %d: %.1f GB free, allowance %.1f GB\n",
                 G.dev[i], freeb/1073741824.0, capacity[i]/1073741824.0);
     }
     G.slot=calloc((size_t)nl*(ne>0?ne:1),sizeof(QSlot));   /* a dense model's tier (ne 0): its trunk alone */
