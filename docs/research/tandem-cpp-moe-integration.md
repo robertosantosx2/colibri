@@ -140,3 +140,25 @@ Guardar JSONL por petición y resumen por campaña con prompt/completion tokens,
 5. Solo después, prototipar el split híbrido decode.
 
 Este documento no afirma que esos cambios estén implementados. Los cambios de código deben ser commits separados en esta rama, con tests host antes de solicitar pruebas CUDA en el MSI.
+
+
+## 7. Hallazgo de código confirmado: reserva omitida con CUDA_EXPERT_GB numérico
+
+La inspección directa de `c/qwen36_tier.c` confirma que `qt_reserve()` se resta de la VRAM libre solo en la rama automática. Cuando `CUDA_EXPERT_GB` contiene un número positivo, la capacidad del tier se fijaba directamente a ese número y **no se limitaba por la VRAM libre menos 1 GiB de margen y G_reserve**. Por tanto, el límite numérico podía prometer al tier memoria que el motor ya había reservado para `q36cc_setup()`.
+
+Se ha corregido en esta rama:
+- calcular primero `available = max(free - 1 GiB - G_reserve, 0)`;
+- tratar el número de `CUDA_EXPERT_GB` como máximo solicitado, no como permiso para sobrepasar las reservas;
+- usar `min(requested, available)` en modo numérico;
+- emitir un diagnóstico cuando el límite se recorta.
+
+Se ha ampliado `c/tests/test_qwen36_tier_autoplace.c` para el caso: 2 GiB libres, petición explícita de 1,5 GiB, reserva de 128 MiB y trunk de 64 MiB. El presupuesto esperado para expertos es 832 MiB.
+
+**Estado de validación:** el cambio y el test están en GitHub; todavía no se ha ejecutado el binario de test ni se ha validado CUDA en el MSI. El commit de código es `0e9c8fec2b1fa54cba4c9af63ce65011bc8f40d8`; el test está en `7c89c18bd17317d45541bc75a0075fa1a3c65a0b`.
+
+## 8. Restricción de co-localización global
+
+El acceso de `q36cc_setup()` confirma otra diferencia frente a la caché de tandem.cpp: Colibrì toma cada proyección obligatoria mediante `q36cc_take()`, fija el dispositivo de la cadena con la primera matriz y rechaza cualquier tensor posterior en otro dispositivo. Por tanto, no basta con colocar cada pareja `dnproj/dnout` en el mismo dispositivo por capa: **todas las capas y `lm_head` que consume la cadena deben terminar en un único dispositivo**.
+
+El `auto_place()` actual distribuye ofertas por capacidad restante (con reglas locales como `dnout` siguiendo a `dnproj`). Esa estrategia puede ser buena para el tier de expertos, pero no es por sí sola una garantía de co-localización global para la cadena. La siguiente fase debe calcular primero un candidato único para la cadena completa, probar el conjunto de bytes y aceptarlo o rechazarlo como unidad. El reparto de expertos puede seguir siendo multi-dispositivo cuando la cadena se desactive, pero no debe mezclarse con el plan de la cadena.
+
